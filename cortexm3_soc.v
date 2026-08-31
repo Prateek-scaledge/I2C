@@ -16,18 +16,17 @@
 //----------------------------------------------------------------------------
 // Purpose : cortexm3_soc.v 
 // Description: Dual Cortex-M3 SoC.  Two CORTEXM3INTEGRATIONDS cores (i0/i1)
-//   share a cm3_matrix_lite 9-master / 8-slave bus matrix.
-//   CPU0 occupies SI0(ICODE), SI1(DCODE), SI3(SYSTEM).
-//   CPU1 occupies SI2(ICODE), SI4(DCODE), SI5(SYSTEM).
-//   SI6-SI8 are used for DMA and WB bridge.
+//   share a cm3_matrix_lite 9-master / 6-slave bus matrix.
+//   CPU0 occupies SI0(ICODE), SI1(DCODE), SI2(SYSTEM).
+//   CPU1 occupies SI3(ICODE), SI4(DCODE), SI5(SYSTEM).
+//   SI6-SI8 are tied IDLE.
 //   sram_a a0 hangs on MI0, sram_a a1 on MI1.
 //   cmsdk_ahb_to_sram_S / cmsdk_fpga_sram_S remain on MI3.
 //   ahb_to_apb bridge stays on MI2.
-//   MI4: Wishbone memory, MI5: Ethernet MAC.
-//   MI6: IPC port 0 (CPU0), MI7: IPC port 1 (CPU1).
+//   MI4-MI5 are stubs (HREADYOUT=1, HRESP=0, HRDATA=0).
 //----------------------------------------------------------------------------
 
-module cortexm3_soc (HCLK, HRESETn, RX_i_AU, TX_o_AU, CPU_RUN);
+module cortexm3_soc (HCLK, HRESETn, RX_i_AU, TX_o_AU, SCL_o, SDA_o, mac_txd, mac_tx_en, mac_tx_err, mac_intr_w, mac_col, mac_crs, mac_rxd, mac_rx_dv, mac_rx_err);
 
   parameter SRAMA_AW = 16;
   parameter SRAMS_AW = 17;
@@ -36,7 +35,12 @@ module cortexm3_soc (HCLK, HRESETn, RX_i_AU, TX_o_AU, CPU_RUN);
   input  HRESETn;
   input  RX_i_AU;
   output TX_o_AU;
-  input  [1:0] CPU_RUN;    // NEW: strap from TB, driven from +CPU_SEL
+
+	inout SCL_o;
+	inout SDA_o;
+
+  output mac_txd,mac_tx_en,mac_tx_err,mac_intr_w;
+  input  mac_col,mac_crs,mac_rxd,mac_rx_dv,mac_rx_err; 
 
   //==========================================================================
   // Clocks / resets (implicit in original; declared explicitly here)
@@ -44,15 +48,8 @@ module cortexm3_soc (HCLK, HRESETn, RX_i_AU, TX_o_AU, CPU_RUN);
   wire   PORESETn;
   wire   SYSRESETn;
   wire   FCLK;
-	
-  wire sync_rstn;
-  wire cpu0_rstn, cpu1_rstn, bus_rstn, dma_rstn, uart_rstn,i2c_rstn, apbmem_rstn, wb_rstn, mac_rstn;
-  wire PSEL_RST;
-  wire [31:0] PRDATA_RST;
-  wire        PREADY_RST;
-  wire [7:0]  PADDR_RST;
-	
-//  assign SYSRESETn = HRESETn;
+
+  assign SYSRESETn = HRESETn;
   assign PORESETn  = HRESETn;
   assign FCLK      = HCLK;
 
@@ -86,7 +83,7 @@ module cortexm3_soc (HCLK, HRESETn, RX_i_AU, TX_o_AU, CPU_RUN);
   wire [31:0]  HRDATAD;
   wire [1:0]   HRESPD;
   reg          EXRESPD;
-  // CPU0 SYSTEM feedback (from matrix SI3)
+  // CPU0 SYSTEM feedback (from matrix SI2)
   wire         HREADYS;
   wire [31:0]  HRDATAS;
   wire [1:0]   HRESPS;
@@ -121,7 +118,9 @@ module cortexm3_soc (HCLK, HRESETn, RX_i_AU, TX_o_AU, CPU_RUN);
   wire [3:0]   HTMDHPROT;
   wire [31:0]  HTMDHWDATA;
   wire         HTMDHWRITE;
-  // HTMDHRDATA, HTMDHREADY, HTMDHRESP are left unconnected (unused)
+  wire [31:0]  HTMDHRDATA;
+  wire         HTMDHREADY;
+  wire [1:0]   HTMDHRDATA_resp; // placeholder – tied to 0 for i0 HTM port
   // CPU0 ICODE outputs (→ SI0)
   wire [1:0]   HTRANSI;
   wire [2:0]   HSIZEI;
@@ -173,7 +172,7 @@ module cortexm3_soc (HCLK, HRESETn, RX_i_AU, TX_o_AU, CPU_RUN);
   //==========================================================================
   // CPU1 (i1) – independent AHB bus signals
   //==========================================================================
-  // CPU1 ICODE outputs (→ SI2)
+  // CPU1 ICODE outputs (→ SI3)
   wire [1:0]   HTRANSI_i1;
   wire [2:0]   HSIZEI_i1;
   wire [31:0]  HADDRI_i1;
@@ -376,6 +375,7 @@ module cortexm3_soc (HCLK, HRESETn, RX_i_AU, TX_o_AU, CPU_RUN);
   wire [31:0]  HRUSERS7;
 
   // --- SI8 : wb to ahb bridge ---
+
   wire [31:0]  HADDRS8    ;
   wire [1:0]   HTRANSS8   ;
   wire         HWRITES8   ;
@@ -503,42 +503,6 @@ module cortexm3_soc (HCLK, HRESETn, RX_i_AU, TX_o_AU, CPU_RUN);
   wire [31:0]  HAUSERM5;
   wire [31:0]  HWUSERM5;
 
-  // --- NEW: MI6 (IPC port 0) ---
-  wire [31:0]  HRDATAM6;
-  wire         HREADYOUTM6;
-  wire         HRESPM6;
-  reg  [31:0]  HRUSERM6;        // tied 0
-  wire         HSELM6;
-  wire [31:0]  HADDRM6;
-  wire [1:0]   HTRANSM6;
-  wire         HWRITEM6;
-  wire [2:0]   HSIZEM6;
-  wire [2:0]   HBURSTM6;
-  wire [3:0]   HPROTM6;
-  wire [31:0]  HWDATAM6;
-  wire         HMASTLOCKM6;
-  wire         HREADYMUXM6;
-  wire [31:0]  HAUSERM6;
-  wire [31:0]  HWUSERM6;
-
-  // --- NEW: MI7 (IPC port 1) ---
-  wire [31:0]  HRDATAM7;
-  wire         HREADYOUTM7;
-  wire         HRESPM7;
-  reg  [31:0]  HRUSERM7;        // tied 0
-  wire         HSELM7;
-  wire [31:0]  HADDRM7;
-  wire [1:0]   HTRANSM7;
-  wire         HWRITEM7;
-  wire [2:0]   HSIZEM7;
-  wire [2:0]   HBURSTM7;
-  wire [3:0]   HPROTM7;
-  wire [31:0]  HWDATAM7;
-  wire         HMASTLOCKM7;
-  wire         HREADYMUXM7;
-  wire [31:0]  HAUSERM7;
-  wire [31:0]  HWUSERM7;
-
   // Scan passthrough
   reg          SCANENABLE;
   reg          SCANINHCLK;
@@ -645,6 +609,8 @@ module cortexm3_soc (HCLK, HRESETn, RX_i_AU, TX_o_AU, CPU_RUN);
   wire        APBACTIVE_b;
   wire        Pslverr_b; 
 
+
+
   //==========================================================================
   // ahb to wb bridge signals (MI4)
   //==========================================================================
@@ -693,11 +659,13 @@ module cortexm3_soc (HCLK, HRESETn, RX_i_AU, TX_o_AU, CPU_RUN);
   wire [31:0] mac_adr_i_wb2ahb,mac_dat_o_wb2ahb,mac_dat_i_wb2ahb;     
   wire [3:0]  mac_sel_i_wb2ahb;
 
+
   //==========================================================================
   // mac signals
   //==========================================================================
   reg mac_tx_clk,mac_rx_clk,mac_col,mac_crs,mac_tx_en,mac_tx_err,mac_rx_dv,mac_rx_err,mac_intr_w;
   reg [3:0] mac_txd,mac_rxd;
+
 
   //==========================================================================
   // DMA APB signals
@@ -709,21 +677,17 @@ module cortexm3_soc (HCLK, HRESETn, RX_i_AU, TX_o_AU, CPU_RUN);
   wire        dma_int_w;     // DMA interrupt → INTISR[1]
 
   wire        PSEL_DMA;
-  wire [12:0] PADDR_DMA;     // changed to 13 bits to match DMA port width
+  wire [31:0] PADDR_DMA;
   wire [31:0] PWDATA_DMA;
   wire        PWRITE_DMA;
   wire        PENABLE_DMA;
-
-  // Intermediate wire for DMA offset (fixes syntax error)
-  wire [31:0] dma_offset;
-  assign dma_offset = Paddr_b - 32'h4000_3000;
 
   //==========================================================================
   // UART APB signals
   //==========================================================================
   wire        PCLKU;
   wire        PRSTU;
-  wire [11:0] PADDRU;        // changed to 12 bits to match UART port
+  wire [31:0] PADDRU;
   wire [31:0] PWDATAU;
   wire        PWRITEU;
   wire        PSELU;
@@ -753,7 +717,7 @@ module cortexm3_soc (HCLK, HRESETn, RX_i_AU, TX_o_AU, CPU_RUN);
   //==========================================================================
   wire        PCLK_M;
   wire        PRST_M;
-  wire [11:0] PADDR_M;       // changed to 12 bits to match memory port
+  wire [31:0] PADDR_M;
   wire [31:0] PWDATA_M;
   wire        PWRITE_M;
   wire        PENABLE_M;
@@ -777,11 +741,6 @@ module cortexm3_soc (HCLK, HRESETn, RX_i_AU, TX_o_AU, CPU_RUN);
   wire        WB_STB_M;
   wire        WB_ACK_M;
   wire        WB_ERR_M;
-
-  //==========================================================================
-  // IPC interrupt wires
-  //==========================================================================
-  wire ipc_c0_irq, ipc_c1_irq;   // NEW: interrupts from IPC
 
   //==========================================================================
   // Initial block
@@ -830,51 +789,20 @@ module cortexm3_soc (HCLK, HRESETn, RX_i_AU, TX_o_AU, CPU_RUN);
     HRUSERM1      = 0;
     HRUSERM2      = 0;
     HRUSERM3      = 0;
-    HRUSERM6      = 0;           // NEW
-    HRUSERM7      = 0;           // NEW
     SCANENABLE    = 0;
     SCANINHCLK    = 0;
 
     // Setting CPU IDs
-    cmsdk_fpga_sram_A0.BRAM0['h3F4] = 8'h0;
-    cmsdk_fpga_sram_A0.BRAM1['h3F4] = 8'h0;
-    cmsdk_fpga_sram_A0.BRAM2['h3F4] = 8'h0;
-    cmsdk_fpga_sram_A0.BRAM3['h3F4] = 8'h0;
-    cmsdk_fpga_sram_A1.BRAM0['h3F4] = 8'h1;
-    cmsdk_fpga_sram_A1.BRAM1['h3F4] = 8'h0;
-    cmsdk_fpga_sram_A1.BRAM2['h3F4] = 8'h0;
-    cmsdk_fpga_sram_A1.BRAM3['h3F4] = 8'h0;
+    cmsdk_fpga_sram_A0.BRAM0[`CPU_ID_REG_INDEX] = `CPU0_ID_VALUE;
+    cmsdk_fpga_sram_A0.BRAM1[`CPU_ID_REG_INDEX] = `DEFAULT_REG_VALUE;
+    cmsdk_fpga_sram_A0.BRAM2[`CPU_ID_REG_INDEX] = `DEFAULT_REG_VALUE;
+    cmsdk_fpga_sram_A0.BRAM3[`CPU_ID_REG_INDEX] = `DEFAULT_REG_VALUE;
+    
+    cmsdk_fpga_sram_A1.BRAM0[`CPU_ID_REG_INDEX] = `CPU1_ID_VALUE;
+    cmsdk_fpga_sram_A1.BRAM1[`CPU_ID_REG_INDEX] = `DEFAULT_REG_VALUE;
+    cmsdk_fpga_sram_A1.BRAM2[`CPU_ID_REG_INDEX] = `DEFAULT_REG_VALUE;
+    cmsdk_fpga_sram_A1.BRAM3[`CPU_ID_REG_INDEX] = `DEFAULT_REG_VALUE;
   end
-	
-  tvc_rst_sync u_rst_sync (
-    .clk       (HCLK),
-    .rst_n_in  (HRESETn),
-    .rst_n_out (sync_rstn)
-  );
-	
-  tvc_rst_ctrl #(.PULSE(16)) u_rst_ctrl (
-    .HCLK          (HCLK),
-    .HRESETn       (sync_rstn),          // synced reset feeds the controller
-    .CPU_RUN       (CPU_RUN),
-    .SYSRESETREQ0  (SYSRESETREQ),        // CPU0's existing output
-    .SYSRESETREQ1  (SYSRESETREQ_i1),     // CPU1's existing output
-    .PSEL          (PSEL_RST),
-    .PENABLE       (Penable_b),
-    .PWRITE        (Pwrite_b),
-    .PADDR         (PADDR_RST),
-    .PWDATA        (Pwdata_b),
-    .PRDATA        (PRDATA_RST),
-    .PREADY        (PREADY_RST),
-    .cpu0_rstn     (cpu0_rstn),
-    .cpu1_rstn     (cpu1_rstn),
-    .bus_rstn      (bus_rstn),
-    .dma_rstn      (dma_rstn),
-    .uart_rstn     (uart_rstn),
-    .i2c_rstn      (i2c_rstn),
-    .apbmem_rstn   (apbmem_rstn),
-    .wb_rstn       (wb_rstn),
-    .mac_rstn      (mac_rstn)
-  );
 
   //==========================================================================
   // CPU0 (i0) instantiation
@@ -888,7 +816,7 @@ module cortexm3_soc (HCLK, HRESETn, RX_i_AU, TX_o_AU, CPU_RUN);
     .TDI            (TDI),
     .CDBGPWRUPACK   (CDBGPWRUPACK),
     .PORESETn       (PORESETn),
-    .SYSRESETn      (cpu0_rstn),
+    .SYSRESETn      (SYSRESETn),
     .RSTBYPASS      (RSTBYPASS),
     .CGBYPASS       (CGBYPASS),
     .FCLK           (FCLK),
@@ -910,7 +838,7 @@ module cortexm3_soc (HCLK, HRESETn, RX_i_AU, TX_o_AU, CPU_RUN);
     .HRDATAD        (HRDATAD),
     .HRESPD         (HRESPD),
     .EXRESPD        (EXRESPD),
-    // SYSTEM bus (SI3)
+    // SYSTEM bus (SI2)
     .HREADYS        (HREADYS),
     .HRDATAS        (HRDATAS),
     .HRESPS         (HRESPS),
@@ -945,7 +873,9 @@ module cortexm3_soc (HCLK, HRESETn, RX_i_AU, TX_o_AU, CPU_RUN);
     .HTMDHPROT      (HTMDHPROT),
     .HTMDHWDATA     (HTMDHWDATA),
     .HTMDHWRITE     (HTMDHWRITE),
-    // HTMDHRDATA, HTMDHREADY, HTMDHRESP are left unconnected (unused)
+    .HTMDHRDATA     (32'h0),    // HTM DMA port not used
+    .HTMDHREADY     (1'b1),
+    .HTMDHRESP      (2'b00),
     // ICODE outputs (→ SI0)
     .HTRANSI        (HTRANSI),
     .HSIZEI         (HSIZEI),
@@ -964,7 +894,7 @@ module cortexm3_soc (HCLK, HRESETn, RX_i_AU, TX_o_AU, CPU_RUN);
     .EXREQD         (EXREQD),
     .HWRITED        (HWRITED),
     .HWDATAD        (HWDATAD),
-    // SYSTEM outputs (→ SI3)
+    // SYSTEM outputs (→ SI2)
     .HMASTERS       (HMASTERS),
     .HTRANSS        (HTRANSS),
     .HWRITES        (HWRITES),
@@ -998,7 +928,7 @@ module cortexm3_soc (HCLK, HRESETn, RX_i_AU, TX_o_AU, CPU_RUN);
   //==========================================================================
   // CPU1 (i1) instantiation
   // Shared control inputs reuse CPU0 reg signals.
-  // Independent AHB buses go to SI2/SI4/SI5.
+  // Independent AHB buses go to SI3/SI4/SI5.
   // Debug / trace outputs are unconnected at top level.
   //==========================================================================
   CORTEXM3INTEGRATIONDS CORTEXM3INTEGRATIONDS_i1 (
@@ -1010,8 +940,8 @@ module cortexm3_soc (HCLK, HRESETn, RX_i_AU, TX_o_AU, CPU_RUN);
     .SWCLKTCK       (SWCLKTCK),
     .TDI            (TDI),
     .CDBGPWRUPACK   (CDBGPWRUPACK),
-    .PORESETn       (PORESETn),		// was PORESETn
-    .SYSRESETn      (cpu1_rstn),	// was SYSRESETn
+    .PORESETn       (PORESETn),
+    .SYSRESETn      (SYSRESETn),
     .RSTBYPASS      (RSTBYPASS),
     .CGBYPASS       (CGBYPASS),
     .FCLK           (FCLK),
@@ -1023,20 +953,20 @@ module cortexm3_soc (HCLK, HRESETn, RX_i_AU, TX_o_AU, CPU_RUN);
     .BIGEND         (BIGEND),
     .INTISR         (INTISR),
     .INTNMI         (INTNMI),
-    // ICODE bus feedback (from matrix SI2)
+    // ICODE bus feedback (from matrix SI3)
     .HREADYI        (HREADYS2),
     .HRDATAI        (HRDATAS2),
-    .HRESPI         ({1'b0, HRESPS2}),   // zero-extend 1-bit to 2-bit
+    .HRESPI         (HRESPS2),
     .IFLUSH         (IFLUSH_i1),
     // DCODE bus feedback (from matrix SI4)
     .HREADYD        (HREADYS4),
     .HRDATAD        (HRDATAS4),
-    .HRESPD         ({1'b0, HRESPS4}),   // zero-extend
+    .HRESPD         (HRESPS4),
     .EXRESPD        (EXRESPD_i1),
     // SYSTEM bus feedback (from matrix SI5)
     .HREADYS        (HREADYS5),
     .HRDATAS        (HRDATAS5),
-    .HRESPS         ({1'b0, HRESPS5}),   // zero-extend
+    .HRESPS         (HRESPS5),
     .EXRESPS        (EXRESPS_i1),
     // Shared event / mode
     .RXEV           (RXEV),
@@ -1068,7 +998,9 @@ module cortexm3_soc (HCLK, HRESETn, RX_i_AU, TX_o_AU, CPU_RUN);
     .HTMDHPROT      (HTMDHPROT_i1),
     .HTMDHWDATA     (HTMDHWDATA_i1),
     .HTMDHWRITE     (HTMDHWRITE_i1),
-    // HTMDHRDATA, HTMDHREADY, HTMDHRESP left unconnected
+    .HTMDHRDATA     (32'h0),    // HTM DMA port not used
+    .HTMDHREADY     (1'b1),
+    .HTMDHRESP      (2'b00),
     // ICODE outputs (→ SI3)
     .HTRANSI        (HTRANSI_i1),
     .HSIZEI         (HSIZEI_i1),
@@ -1254,15 +1186,6 @@ module cortexm3_soc (HCLK, HRESETn, RX_i_AU, TX_o_AU, CPU_RUN);
     .HREADYOUTM5      (HREADYOUTM5),
     .HRESPM5          (HRESPM5),
     .HRUSERM5         (HRUSERM5),
-    // --- NEW: MI6 and MI7 connections to IPC ---
-    .HRDATAM6         (HRDATAM6),
-    .HREADYOUTM6      (HREADYOUTM6),
-    .HRESPM6          (HRESPM6),
-    .HRUSERM6         (HRUSERM6),
-    .HRDATAM7         (HRDATAM7),
-    .HREADYOUTM7      (HREADYOUTM7),
-    .HRESPM7          (HRESPM7),
-    .HRUSERM7         (HRUSERM7),
     // Scan
     .SCANENABLE       (SCANENABLE),
     .SCANINHCLK       (SCANINHCLK),
@@ -1344,31 +1267,6 @@ module cortexm3_soc (HCLK, HRESETn, RX_i_AU, TX_o_AU, CPU_RUN);
     .HREADYMUXM5      (HREADYMUXM5),
     .HAUSERM5         (HAUSERM5),
     .HWUSERM5         (HWUSERM5),
-    // --- NEW: Matrix outputs to M6 and M7 ---
-    .HSELM6           (HSELM6),
-    .HADDRM6          (HADDRM6),
-    .HTRANSM6         (HTRANSM6),
-    .HWRITEM6         (HWRITEM6),
-    .HSIZEM6          (HSIZEM6),
-    .HBURSTM6         (HBURSTM6),
-    .HPROTM6          (HPROTM6),
-    .HWDATAM6         (HWDATAM6),
-    .HMASTLOCKM6      (HMASTLOCKM6),
-    .HREADYMUXM6      (HREADYMUXM6),
-    .HAUSERM6         (HAUSERM6),
-    .HWUSERM6         (HWUSERM6),
-    .HSELM7           (HSELM7),
-    .HADDRM7          (HADDRM7),
-    .HTRANSM7         (HTRANSM7),
-    .HWRITEM7         (HWRITEM7),
-    .HSIZEM7          (HSIZEM7),
-    .HBURSTM7         (HBURSTM7),
-    .HPROTM7          (HPROTM7),
-    .HWDATAM7         (HWDATAM7),
-    .HMASTLOCKM7      (HMASTLOCKM7),
-    .HREADYMUXM7      (HREADYMUXM7),
-    .HAUSERM7         (HAUSERM7),
-    .HWUSERM7         (HWUSERM7),
     // SI0 response → CPU0 ICODE
     .HRDATAS0         (HRDATAS0),
     .HREADYS0         (HREADYS0),
@@ -1415,36 +1313,17 @@ module cortexm3_soc (HCLK, HRESETn, RX_i_AU, TX_o_AU, CPU_RUN);
     .SCANOUTHCLK      (SCANOUTHCLK)
   );
 
-  //==========================================================================
-  // IPC block instantiation (NEW)
-  //==========================================================================
-  ahb_dual_core_ipc ipc (
-    .HCLK          (HCLK),
-    .HRESETn       (bus_rstn),          // use bus reset (or HRESETn)
-    // Core0 AHB slave → M6
-    .c0_HSEL       (HSELM6),
-    .c0_HADDR      (HADDRM6),
-    .c0_HWRITE     (HWRITEM6),
-    .c0_HTRANS     (HTRANSM6),
-    .c0_HWDATA     (HWDATAM6),
-    .c0_HREADYOUT  (HREADYOUTM6),
-    .c0_HRESP      (HRESPM6),
-    .c0_HRDATA     (HRDATAM6),          // → matrix input
-    // Core1 AHB slave → M7
-    .c1_HSEL       (HSELM7),
-    .c1_HADDR      (HADDRM7),
-    .c1_HWRITE     (HWRITEM7),
-    .c1_HTRANS     (HTRANSM7),
-    .c1_HWDATA     (HWDATAM7),
-    .c1_HREADYOUT  (HREADYOUTM7),
-    .c1_HRESP      (HRESPM7),
-    .c1_HRDATA     (HRDATAM7),          // → matrix input
-    // Interrupts
-    .c0_IRQ        (ipc_c0_irq),
-    .c1_IRQ        (ipc_c1_irq)
-  );
-
-  // Tie unused user signals (already done in initial block)
+  `ifdef PRINTF_ENABLE
+    sim_stdout_monitor (
+	  .HCLK(HCLK),
+	  .HRESETn(HRESETn),
+	  .HADDRS(HADDRS3),
+	  .HWDATAS(HWDATAS3),
+	  .HWRITES(HWRITES3),
+	  .HTRANSS(HTRANSS3),
+	  .HREADYS(HREADYS3)
+	  );
+  `endif
 
   //==========================================================================
   // SRAM A0 – Code/Data SRAM, connected to MI0
@@ -1456,7 +1335,7 @@ module cortexm3_soc (HCLK, HRESETn, RX_i_AU, TX_o_AU, CPU_RUN);
   assign WREN_SRAMA0      = SRAMWEN_SRAMA0;
   assign CS_SRAMA0        = SRAMCS_SRAMA0;
 
-  cmsdk_fpga_sram #(.AW(SRAMA_AW), .MEMFILE("image_cpu0.hex")) cmsdk_fpga_sram_A0 (
+  cmsdk_fpga_sram #(.AW(SRAMA_AW)) cmsdk_fpga_sram_A0 (
     .CLK   (CLK_SRAMA0),
     .ADDR  (ADDR_SRAMA0),
     .WDATA (WDATA_SRAMA0),
@@ -1466,7 +1345,7 @@ module cortexm3_soc (HCLK, HRESETn, RX_i_AU, TX_o_AU, CPU_RUN);
   );
 
   assign HCLK_SRAMA0       = HCLK;
-  assign HRESETn_SRAMA0    = bus_rstn;
+  assign HRESETn_SRAMA0    = HRESETn;
   assign SRAMRDATA_SRAMA0  = RDATA_SRAMA0;
   assign HSEL_SRAMA0       = HSELM0;
   assign HREADY_SRAMA0     = HREADYMUXM0;
@@ -1511,7 +1390,7 @@ module cortexm3_soc (HCLK, HRESETn, RX_i_AU, TX_o_AU, CPU_RUN);
   assign WREN_SRAMA1      = SRAMWEN_SRAMA1;
   assign CS_SRAMA1        = SRAMCS_SRAMA1;
 
-  cmsdk_fpga_sram #(.AW(SRAMA_AW), .MEMFILE("image_cpu1.hex")) cmsdk_fpga_sram_A1 (
+  cmsdk_fpga_sram #(.AW(SRAMA_AW)) cmsdk_fpga_sram_A1 (
     .CLK   (CLK_SRAMA1),
     .ADDR  (ADDR_SRAMA1),
     .WDATA (WDATA_SRAMA1),
@@ -1521,7 +1400,7 @@ module cortexm3_soc (HCLK, HRESETn, RX_i_AU, TX_o_AU, CPU_RUN);
   );
 
   assign HCLK_SRAMA1       = HCLK;
-  assign HRESETn_SRAMA1    = bus_rstn;
+  assign HRESETn_SRAMA1    = HRESETn;
   assign SRAMRDATA_SRAMA1  = RDATA_SRAMA1;
   assign HSEL_SRAMA1       = HSELM1;
   assign HREADY_SRAMA1     = HREADYMUXM1;
@@ -1565,7 +1444,7 @@ module cortexm3_soc (HCLK, HRESETn, RX_i_AU, TX_o_AU, CPU_RUN);
   assign WREN_SRAMS     = SRAMWEN_SRAMS;
   assign CS_SRAMS       = SRAMCS_SRAMS;
 
-  cmsdk_fpga_sram #(.AW(SRAMS_AW), .LOAD_FROM_FILE(0)) cmsdk_fpga_sram_S (
+  cmsdk_fpga_sram #(.AW(SRAMS_AW)) cmsdk_fpga_sram_S (
     .CLK   (CLK_SRAMS),
     .ADDR  (ADDR_SRAMS),
     .WDATA (WDATA_SRAMS),
@@ -1575,7 +1454,7 @@ module cortexm3_soc (HCLK, HRESETn, RX_i_AU, TX_o_AU, CPU_RUN);
   );
 
   assign HCLK_SRAMS      = HCLK;
-  assign HRESETn_SRAMS   = bus_rstn;
+  assign HRESETn_SRAMS   = HRESETn;
   assign SRAMRDATA_SRAMS = RDATA_SRAMS;
   assign HSEL_SRAMS      = HSELM3;
   assign HREADY_SRAMS    = HREADYMUXM3;
@@ -1634,25 +1513,20 @@ module cortexm3_soc (HCLK, HRESETn, RX_i_AU, TX_o_AU, CPU_RUN);
   assign PSEL_I2C  = Psel_b &  (Paddr_b[15:12] == 4'h1);
   assign PSELU     = Psel_b &  (Paddr_b[15:12] == 4'h2);
   assign PSEL_DMA  = Psel_b & ((Paddr_b[15:12] == 4'h3) | (Paddr_b[15:12] == 4'h4));
-  assign PSEL_RST  = Psel_b & (Paddr_b[15:12] == 4'h5);		// reset controller
-  assign PADDR_RST = Paddr_b[7:0];		// was left undriven; tvc_rst_ctrl decodes PADDR against 8'h0/8'h4/8'h8
 
-  // Peripheral read-data / ready mux – priority: DMA > RST > UART > I2C > MEM
+  // Peripheral read-data / ready mux – priority: DMA > UART > I2C > MEM
   assign Prdata_b  = PSEL_DMA  ? PRDATA_DMA  :
-                     PSEL_RST  ? PRDATA_RST  :
                      PSELU     ? PRDATAU     :
                      PSEL_I2C  ? PRDATA_I2C  : PRDATA_M;
 
   assign Pready_b  = PSEL_DMA  ? PREADY_DMA  :
-                     PSEL_RST  ? PREADY_RST  :
                      PSELU     ? PREADYU     :
                      PSEL_I2C  ? PREADY_I2C  : PREADY_M;
-	
+
   assign Pslverr_b = PSEL_DMA  ? PSLVERR_DMA :
-                     PSEL_RST  ? 1'b0        :
                      PSELU     ? PSLVERRU    :
                      PSEL_I2C  ? PSLVERR_I2C : PSLVERR_M;
-
+ 
   cmsdk_ahb_to_apb #(.ADDRWIDTH (32)) bridge_ip (
     .HCLK      (Hclk_b),
     .HRESETn   (Hrst_b),
@@ -1689,7 +1563,7 @@ module cortexm3_soc (HCLK, HRESETn, RX_i_AU, TX_o_AU, CPU_RUN);
   //AHB TO WB BRIDGE (M4)
   //==========================================================================
   assign Hclk_ahb2wb = HCLK;
-  assign Hrst_ahb2wb = wb_rstn;
+  assign Hrst_ahb2wb = HRESETn;
   assign Hwrite_ahb2wb = HWRITEM4; 
   assign Hreadyin_ahb2wb = HREADYMUXM4;
   assign Hwdata_ahb2wb = HWDATAM4; 
@@ -1726,11 +1600,12 @@ module cortexm3_soc (HCLK, HRESETn, RX_i_AU, TX_o_AU, CPU_RUN);
   .WB_SEL_O(sel_o_ahb2wb)
 );
 
+
   //==========================================================================
   // WISHBONE MENORY
   //==========================================================================
   assign WB_CLK_M = HCLK;
-  assign WB_RST_M = ~wb_rstn;
+  assign WB_RST_M = ~HRESETn;
   assign WB_ADR_M = adr_o_ahb2wb;
   assign WB_DAT_M_I = dat_o_ahb2wb;
   assign dat_i_ahb2wb = WB_DAT_M_O;
@@ -1764,7 +1639,7 @@ wb_memory #(
   //AHB TO WB BRIDGE ETHERNET (M5)
   //==========================================================================
   assign mac_Hclk_ahb2wb = HCLK;
-  assign mac_Hrst_ahb2wb = mac_rstn;
+  assign mac_Hrst_ahb2wb = HRESETn;
   assign mac_Hwrite_ahb2wb = HWRITEM5; 
   assign mac_Hreadyin_ahb2wb = HREADYMUXM5;
   assign mac_Hwdata_ahb2wb = HWDATAM5; 
@@ -1804,9 +1679,9 @@ wb_memory #(
   //==========================================================================
   //WB TO AHB BRIDGE ETHERNET (S8)
   //==========================================================================
-  wishbone_to_ahb u_wb2ahb (
+  wishbone_to_ahb(
   .HCLK(HCLK),
-  .HRESETn(mac_rstn),
+  .HRESETn(HRESETn),
   .WB_CYC_I(mac_cyc_i_wb2ahb),     
   .WB_STB_I(mac_stb_i_wb2ahb),     
   .WB_WE_I(mac_we_i_wb2ahb),      
@@ -1828,6 +1703,7 @@ wb_memory #(
   .HREADYin(HREADYS8)
 );
 
+
 //====================================================================================
 //Address remaping for accessing buffer descriptors inside the MAC
 //====================================================================================
@@ -1839,7 +1715,7 @@ assign MAC_ADDRESS = (mac_adr_o_ahb2wb >> 2);
   //==========================================================================
   assign mac_tx_clk = HCLK;
   assign mac_rx_clk = HCLK;
-  // INTISR[2] is assigned in the always block below
+  assign INTISR[2]  = mac_intr_w;
 
 ethmac Ethernet_MAC ( 
     // --------------------------------------------------
@@ -1914,15 +1790,27 @@ ethmac Ethernet_MAC (
   //==========================================================================
   // UART
   //==========================================================================
-  // INTISR[0] assigned in always block below
+  assign INTISR[0] = uart_int_w;   // UART event → IRQ[0] for both CPUs
 
   assign PCLKU    = HCLK;
-  assign PRSTU    = uart_rstn;
-  assign PADDRU   = Paddr_b[11:0];   // use lower 12 bits
-  assign PWDATAU  = Pwdata_b;
+  assign PRSTU    = HRESETn;
+  assign PADDRU   = Paddr_b;
+  assign PWDATAU  = Pwdata_b;    // fixed: was incorrectly PWDATA in original
   assign PENABLEU = Penable_b;
   assign PWRITEU  = Pwrite_b;
   assign PSTRBU   = Pstrb_b;
+
+ // UART DMA wires for pheripheral connection
+  wire uart_tx_dma_req;
+  wire uart_rx_dma_req;
+  wire uart_tx_dma_clr;
+  wire uart_rx_dma_clr;
+
+  // I2C DMA wires for pheripheral connection
+  wire i2c_tx_dma_req;
+  wire i2c_rx_dma_req;
+  wire i2c_tx_dma_clr;
+  wire i2c_rx_dma_clr;
 
   apb_uart_sv #(.APB_ADDR_WIDTH(12)) uart_ip (
     .CLK     (PCLKU),
@@ -1938,14 +1826,28 @@ ethmac Ethernet_MAC (
     .PSLVERR (PSLVERRU),
     .rx_i    (RX_i_AU),
     .tx_o    (TX_o_AU),
-    .event_o (uart_int_w)
+    .event_o (uart_int_w),
+    .tx_dma_req_o(uart_tx_dma_req),
+    .rx_dma_req_o(uart_rx_dma_req),
+    .tx_dma_clr_i(uart_tx_dma_clr),
+    .rx_dma_clr_i(uart_rx_dma_clr)
+
   );
 
   //==========================================================================
   // I2C
   //==========================================================================
+  wire i2c_int_tx;
+  wire i2c_int_rx;
+  wire PSLVERR_I2C;
+  wire SDA_ENABLE_I2C;
+  wire SCL_ENABLE_I2C;
+
+  assign INTISR[3] = i2c_int_tx;   // I2C TX FIFO empty interrupt → IRQ[3] for both CPUs
+  assign INTISR[4] = i2c_int_rx;   // I2C RX FIFO full interrupt  → IRQ[4] for both CPUs
+
   assign PCLK_I2C    = HCLK;
-  assign PRESETn_I2C = i2c_rstn;
+  assign PRESETn_I2C = HRESETn;
   assign PADDR_I2C   = Paddr_b - 32'h4000_1000;
   assign PWDATA_I2C  = Pwdata_b;
   assign PENABLE_I2C = Penable_b;
@@ -1961,21 +1863,25 @@ ethmac Ethernet_MAC (
     .PENABLE    (PENABLE_I2C),
     .PREADY     (PREADY_I2C),
     .PSLVERR    (PSLVERR_I2C),
-    .INT_RX     (),
-    .INT_TX     (),
+    .INT_RX     (i2c_int_rx),
+    .INT_TX     (i2c_int_tx),
     .PRDATA     (PRDATA_I2C),
-    .SDA_ENABLE (),
-    .SCL_ENABLE (),
-    .SDA        (),
-    .SCL        ()
+    .SDA_ENABLE (SDA_ENABLE_I2C),
+    .SCL_ENABLE (SCL_ENABLE_I2C),
+    .SDA        (SDA_o),
+    .SCL        (SCL_o),
+    .tx_dma_req_o(i2c_tx_dma_req),
+    .rx_dma_req_o(i2c_rx_dma_req),
+    .tx_dma_clr_i(i2c_tx_dma_clr),
+    .rx_dma_clr_i(i2c_rx_dma_clr)
   );
 
   //==========================================================================
   // APB memory
   //==========================================================================
   assign PCLK_M    = HCLK;
-  assign PRST_M    = ~apbmem_rstn;
-  assign PADDR_M   = Paddr_b[11:0];   // use lower 12 bits
+  assign PRST_M    = ~HRESETn;
+  assign PADDR_M   = Paddr_b;
   assign PWDATA_M  = Pwdata_b;
   assign PWRITE_M  = Pwrite_b;
   assign PENABLE_M = Penable_b;
@@ -2002,16 +1908,26 @@ ethmac Ethernet_MAC (
   //   INT         : INTISR[1]
   //   periph_*    : left for user connection
   //==========================================================================
-  // INTISR[1] assigned in always block below
-  assign PADDR_DMA   = dma_offset[12:0];   // lower 13 bits
+  assign INTISR[1]   = dma_int_w;  // DMA  INT   → IRQ[1] for both CPUs
+  assign PADDR_DMA   = Paddr_b - 32'h4000_3000;
   assign PWDATA_DMA  = Pwdata_b;
   assign PWRITE_DMA  = Pwrite_b;
-  assign PENABLE_DMA = Penable_b;
+  assign PENABLE_DMA = Penable_b; 
+  wire[31:1] dma_tx_clr_bus;
+  wire[31:1] dma_rx_clr_bus;
+
+  // Clear signal for the UART
+  assign uart_tx_dma_clr= dma_tx_clr_bus[1];
+  assign uart_rx_dma_clr= dma_rx_clr_bus[1];
+
+  // Clear signal for the I2C
+  assign i2c_tx_dma_clr= dma_tx_clr_bus[2];
+  assign i2c_rx_dma_clr= dma_rx_clr_bus[2];
 
   dma_ahb32 dma_ip (
     // Clk / reset
     .clk          (HCLK),
-    .reset        (~dma_rstn),        // active-high reset
+    .reset        (~HRESETn),        // active-high reset
 
     // Scan
     .scan_en      (1'b0),
@@ -2022,11 +1938,11 @@ ethmac Ethernet_MAC (
     // Interrupt
     .INT          (dma_int_w),       // → INTISR[1]
 
-    // Peripheral handshake (user to connect)
-    .periph_tx_req  (),
-    .periph_tx_clr  (),
-    .periph_rx_req  (),
-    .periph_rx_clr  (),
+    // Peripheral handshake 
+    .periph_tx_req  ({29'b0,i2c_tx_dma_req,uart_tx_dma_req}),
+    .periph_tx_clr  (uart_tx_dma_clr),
+    .periph_rx_req  ({29'b0,i2c_rx_dma_req,uart_rx_dma_req}),
+    .periph_rx_clr  (uart_rx_dma_clr),
 
     // APB slave interface (config registers)
     .pclken       (1'b1),            // always-enabled APB clock
@@ -2042,7 +1958,7 @@ ethmac Ethernet_MAC (
     // AHB write master → SI7
     .WHADDR0      (HADDRS7),
     .WHBURST0     (HBURSTS7),
-    .WHSIZE0      (HSIZES7[1:0]),    // connect lower 2 bits
+    .WHSIZE0      (HSIZES7),
     .WHTRANS0     (HTRANSS7),
     .WHWDATA0     (HWDATAS7),
     .WHREADY0     (HREADYS7),        // ← matrix HREADYS7
@@ -2051,24 +1967,12 @@ ethmac Ethernet_MAC (
     // AHB read master → SI6
     .RHADDR0      (HADDRS6),
     .RHBURST0     (HBURSTS6),
-    .RHSIZE0      (HSIZES6[1:0]),    // connect lower 2 bits
+    .RHSIZE0      (HSIZES6),
     .RHTRANS0     (HTRANSS6),
     .RHRDATA0     (HRDATAS6),        // ← matrix HRDATAS6
     .RHREADY0     (HREADYS6),        // ← matrix HREADYS6
     .RHRESP0      (HRESPS6)          // ← matrix HRESPS6
   );
-
-  //==========================================================================
-  // Interrupt vector assignment (including IPC)
-  //==========================================================================
-  always @* begin
-    INTISR = 240'h0;
-    INTISR[0] = uart_int_w;
-    INTISR[1] = dma_int_w;
-    INTISR[2] = mac_intr_w;
-    INTISR[8] = ipc_c0_irq;
-    INTISR[9] = ipc_c1_irq;
-  end
 
   //==========================================================================
   // Bus-matrix SI → CPU feedback connections
@@ -2077,17 +1981,17 @@ ethmac Ethernet_MAC (
   // CPU0 ICODE feedback ← matrix SI0
   assign HREADYI = HREADYS0;
   assign HRDATAI = HRDATAS0;
-  assign HRESPI  = {1'b0, HRESPS0};     // zero-extend to 2-bit
+  assign HRESPI  = HRESPS0;     // 1-bit→2-bit: zero-extended
 
   // CPU0 DCODE feedback ← matrix SI1
   assign HREADYD = HREADYS1;
   assign HRDATAD = HRDATAS1;
-  assign HRESPD  = {1'b0, HRESPS1};
+  assign HRESPD  = HRESPS1;
 
   // CPU0 SYSTEM feedback ← matrix SI3
   assign HREADYS = HREADYS3;
   assign HRDATAS = HRDATAS3;
-  assign HRESPS  = {1'b0, HRESPS3};
+  assign HRESPS  = HRESPS3;
 
   // CPU1 ICODE/DCODE/SYSTEM feedbacks are wired directly in the i1 port map
   // (HREADYS3→.HREADYI, HRDATAS3→.HRDATAI, etc.).

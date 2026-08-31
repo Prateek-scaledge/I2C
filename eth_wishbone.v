@@ -247,7 +247,7 @@
 //
 //
 
-//`include "ethmac_defines.v"
+
 
 module eth_wishbone
   (
@@ -1719,7 +1719,7 @@ begin
       2'h3 : TxData <= TxData_wb[07:00];// Big Endian Byte Ordering
     endcase
   else
-  if(TxStartFrm & TxUsedData & TxPointerLSB==2'h3)
+  if(TxStartFrm & TxUsedData & Flop & TxPointerLSB==2'h3)
     TxData <= TxData_wb[31:24];// Big Endian Byte Ordering
   else
   if(TxUsedData & Flop)

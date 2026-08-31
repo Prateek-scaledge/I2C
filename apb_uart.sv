@@ -18,8 +18,13 @@ module apb_uart_sv
     input  logic                      rx_i,      // Receiver input
     output logic                      tx_o,      // Transmitter output
 
-    output logic                      event_o    // interrupt/event output
-);
+    output logic                      event_o,    // interrupt/event output
+    
+    output logic                      tx_dma_req_o,   
+    output logic                      rx_dma_req_o,   
+    input logic                       tx_dma_clr_i,   
+    input logic                       rx_dma_clr_i  
+ );
     // register addresses
     parameter RBR = 3'h0, THR = 3'h0, DLL = 3'h0, IER = 3'h1, DLM = 3'h1, IIR = 3'h2,
               FCR = 3'h2, LCR = 3'h3, MCR = 3'h4, LSR = 3'h5, MSR = 3'h6, SCR = 3'h7;
@@ -162,6 +167,44 @@ module apb_uart_sv
         .interrupt_o        ( event_o                       ),
         .IIR_o              ( IIR_o                         )
     );
+    // -------------------------------------------------------------
+    // DMA LATCHED HANDSHAKE LOGIC
+    // -------------------------------------------------------------
+    always_ff @(posedge CLK or negedge RSTN) begin
+        if (!RSTN) begin
+            tx_dma_req_o <= 1'b0;
+            rx_dma_req_o <= 1'b0;
+        end else begin
+            
+            // ---------------------------------------------------------
+            // 1. UART Receive (UART -> Memory) 
+            // ---------------------------------------------------------
+            if (rx_dma_clr_i) begin
+                // DMA pulsed clear: The transfer is complete. Clear the request.
+                rx_dma_req_o <= 1'b0;
+            end 
+            else if (fifo_rx_valid && !rx_dma_req_o) begin
+                // UART has received data and no request is currently pending.
+                // Assert request to tell DMA to read from RX FIFO.
+                rx_dma_req_o <= 1'b1;
+            end
+
+            // ---------------------------------------------------------
+            // 2. UART Transmit (Memory -> UART)
+            // ---------------------------------------------------------
+            if (tx_dma_clr_i) begin
+                // DMA pulsed clear: The transfer is complete. Clear the request.
+                tx_dma_req_o <= 1'b0;
+            end 
+            else if ((tx_elements < TX_FIFO_DEPTH) && !tx_dma_req_o) begin
+                // UART TX FIFO has empty space and no request is currently pending.
+                // Assert request to tell DMA to write data to TX FIFO.
+                tx_dma_req_o <= 1'b1;
+            end
+
+        end
+    end
+
 
     //soft reset logic
 		always_ff @(posedge CLK or negedge RSTN) begin
@@ -189,20 +232,19 @@ module apb_uart_sv
         register_adr  = 4'h0;
         active_pwdata = 8'h00;
         if (PSTRB[0]) begin
-            register_adr  = {1'b0, PADDR[2], 2'b00}; // Reg 0 (0x00) or Reg 4 (0x04)
+            register_adr  = {PADDR[3:2], 2'b00}; 
             active_pwdata = PWDATA[7:0];
         end else if (PSTRB[1]) begin
-            register_adr  = {1'b0, PADDR[2], 2'b01}; // Reg 1 (0x01) or Reg 5 (0x05)
-            active_pwdata =  PWDATA[7:0];
+            register_adr  = {PADDR[3:2], 2'b01}; 
+            active_pwdata = PWDATA[7:0];
         end else if (PSTRB[2]) begin
-            register_adr  = {1'b0, PADDR[2], 2'b10}; // Reg 2 (0x02) or Reg 6 (0x06)
+            register_adr  = {PADDR[3:2], 2'b10};
             active_pwdata = PWDATA[7:0];
         end else if (PSTRB[3]) begin
-            register_adr  = {1'b0, PADDR[2], 2'b11}; // Reg 3 (0x03) or Reg 7 (0x07)
-            active_pwdata = PWDATA[7:0];
+            register_adr  = {PADDR[3:2], 2'b11};
+	    active_pwdata = PWDATA[7:0];
         end
-    end
-    // UART Registers
+    end  // UART Registers
     // register write and update logic
     // register write and update logic
     always_comb
