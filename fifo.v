@@ -94,11 +94,16 @@ module fifo
 
 	reg [AWIDTH-1:0] wr_ptr;
 	reg [AWIDTH-1:0] rd_ptr;
-	reg [AWIDTH-1:0] counter;
+	reg [AWIDTH:0]   counter;      // one extra bit: can represent 0..2**AWIDTH (16), not just 0..15
 
 	wire [AWIDTH-1:0] wr;
 	wire [AWIDTH-1:0] rd;
-	wire [AWIDTH-1:0] w_counter;
+	wire              wr_fire;     // a write actually happens this cycle
+	wire              rd_fire;     // a read actually happens this cycle
+
+	assign wr_fire = wr_en && !f_full;
+	assign rd_fire = rd_en && !f_empty;
+
 //Write pointer
 	always@(posedge clock)
 	begin
@@ -106,7 +111,7 @@ module fifo
 		begin
 			wr_ptr <= {(AWIDTH){1'b0}};
 		end
-		else if (wr_en && !f_full)
+		else if (wr_fire)
 		begin
 			mem[wr_ptr]<=data_in;
 			wr_ptr <= wr;
@@ -120,39 +125,47 @@ module fifo
 		begin
 			rd_ptr <= {(AWIDTH){1'b0}};
 		end
-		else if (rd_en && !f_empty)
+		else if (rd_fire)
 		begin
 			rd_ptr <= rd;
 		end
 	end
 
-//Counter
-	always@(posedge clock)
-	begin
-		if (reset)
-		begin
-			counter <= {(AWIDTH){1'b0}};
-		end
-		else
-		begin
-			if (rd_en && !f_empty && !wr_en)
-			begin
-				counter <= w_counter;	
-			end
-			else if (wr_en && !f_full && !rd_en) 
-			begin
-				counter <= w_counter;
-			end
-		end
-	end
+//Counter (fixed: handles simultaneous read+write, and can count all the way to 16)
+	// Counter
+// Handles simultaneous read/write and can count from 0 to 16
+always @(posedge clock)
+begin
+    if (reset)
+    begin
+        counter <= {(AWIDTH+1){1'b0}};
+    end
+    else if (wr_fire && rd_fire)
+    begin
+        // One write and one read -> occupancy unchanged
+        counter <= counter;
+    end
+    else if (wr_fire && !rd_fire)
+    begin
+        // Write only -> occupancy +1
+        counter <= counter + 1'b1;
+    end
+    else if (rd_fire && !wr_fire)
+    begin
+        // Read only -> occupancy -1
+        counter <= counter - 1'b1;
+    end
+    else
+    begin
+        // No valid read/write -> occupancy unchanged
+        counter <= counter;
+    end
+end
 
-	assign f_full = (counter == 4'd15)?1'b1:1'b0;//DEPTH- 1) ; 
-	assign f_empty = (counter == 4'd0)?1'b1:1'b0;//{AWIDTH{1'b0}});
-	assign wr = (wr_en && !f_full)?wr_ptr + 4'd1:wr_ptr + 4'd0;
-	assign rd = (rd_en && !f_empty)?rd_ptr+ 4'd1:rd_ptr+ 4'd0;
-	assign w_counter = (rd_en && !f_empty && !wr_en)? counter - 4'd1:
-			   (wr_en && !f_full && !rd_en)? counter + 4'd1:
-			    w_counter + 4'd0;
+	assign f_full  = (counter == (2**AWIDTH));   // true FULL: all 16 slots occupied
+	assign f_empty = (counter == {(AWIDTH+1){1'b0}});
+	assign wr = wr_ptr + 4'd1;
+	assign rd = rd_ptr + 4'd1;
 	//assign wr_en_ram = wr_en;
 	//assign rd_en_ram = rd_en;
 	assign data_out = mem[rd_ptr];//data_ram_out;

@@ -90,6 +90,8 @@ module apb(
 			input ERROR,
 			input TX_EMPTY,
 			input RX_EMPTY,
+			input TX_FULL,
+			input RX_FULL,
 			
 			//external pin
 			output [31:0] PRDATA,
@@ -112,23 +114,45 @@ module apb(
 
 	  );
 
+//internal wires for address-decode error checking
+wire ADDR_VALID;
+wire ADDR_ERROR;
+
+//NEW: read-only STATUS register at offset 0x10 (16) so SW/testbench
+//can poll FIFO occupancy instead of using fixed delays.
+//  bit0 = TX_EMPTY   bit1 = RX_EMPTY
+//  bit2 = TX_FULL    bit3 = RX_FULL
+//  bit4 = ERROR
+localparam [31:0] ADDR_STATUS = 32'd16;
+
+wire [31:0] STATUS_REG;
+assign STATUS_REG = {27'd0, ERROR, RX_FULL, TX_FULL, RX_EMPTY, TX_EMPTY};
+
 //ENABLE WRITE ON TX FIFO
 assign WR_ENA = (PWRITE == 1'b1 & PENABLE == 1'b1 & PADDR == 32'd0 & PSELx == 1'b1)?  1'b1:1'b0;
 
 //ENABLE READ ON RX FIFO
 assign RD_ENA = (PWRITE == 1'b0 & PENABLE == 1'b1  & PADDR == 32'd4 & PSELx == 1'b1)?  1'b1:1'b0;
 
-//WRITE ON I2C MODULE
-assign PREADY = ((WR_ENA == 1'b1 | RD_ENA == 1'b1 | PADDR == 32'd8 | PADDR == 32'd12) &  (PENABLE == 1'b1 & PSELx == 1'b1))? 1'b1:1'b0;
+//ADDRESS DECODE: 0,4,8,12,16 are valid registers
+assign ADDR_VALID = (PADDR == 32'd0) | (PADDR == 32'd4) | (PADDR == 32'd8) | (PADDR == 32'd12) | (PADDR == ADDR_STATUS);
+
+//ADDRESS ERROR: selected + enabled + address not in valid map
+assign ADDR_ERROR = (PSELx == 1'b1 & PENABLE == 1'b1 & !ADDR_VALID);
+
+//WRITE ON I2C MODULE (also complete the transfer on an invalid address, instead of hanging)
+assign PREADY = ((WR_ENA == 1'b1 | RD_ENA == 1'b1 | PADDR == 32'd8 | PADDR == 32'd12 | PADDR == ADDR_STATUS | ADDR_ERROR == 1'b1) &  (PENABLE == 1'b1 & PSELx == 1'b1))? 1'b1:1'b0;
 
 //INPUT TO WRITE ON TX FIFO
-assign WRITE_DATA_ON_TX = (PADDR == 32'd0)? PWDATA:PWDATA;
+assign WRITE_DATA_ON_TX = (PSELx == 1'b1 & PENABLE == 1'b1 & PWRITE ==1'b1 & PADDR == 32'd0)? PWDATA:32'd0;
 
-//OUTPUT DATA FROM RX TO PRDATA
-assign PRDATA = (PADDR == 32'd4)? READ_DATA_ON_RX:READ_DATA_ON_RX;
+//OUTPUT DATA FROM RX/STATUS TO PRDATA
+assign PRDATA = (PADDR == 32'd4 & PWRITE == 1'b0)   ? READ_DATA_ON_RX :
+                 (PADDR == ADDR_STATUS) ? STATUS_REG  :
+                                       32'd0;
 
-//ERROR FROM I2C CORE
-assign PSLVERR = ERROR; 
+//ERROR FROM I2C CORE OR FROM INVALID ADDRESS DECODE
+assign PSLVERR = ERROR | ADDR_ERROR; 
 
 //INTERRUPTION FROM I2C
 assign INT_TX = TX_EMPTY;
@@ -136,35 +160,25 @@ assign INT_TX = TX_EMPTY;
 //INTERRUPTION FROM I2C
 assign INT_RX = RX_EMPTY;
 
-//This is sequential logic used only to register configuration
-always@(posedge PCLK)
+always @(posedge PCLK)
 begin
-
-	if(!PRESETn)
-	begin
-		INTERNAL_I2C_REGISTER_CONFIG <= 14'd0;
-		INTERNAL_I2C_REGISTER_TIMEOUT <= 14'd0;
-	end
-	else
-	begin
-
-		// Set configuration to i2c
-		if(PADDR == 32'd8 && PSELx == 1'b1 && PWRITE == 1'b1 && PREADY == 1'b1)
-		begin
-			INTERNAL_I2C_REGISTER_CONFIG <= PWDATA[13:0];
-		end
-		else if(PADDR == 32'd12 && PSELx == 1'b1 && PWRITE == 1'b1 && PREADY == 1'b1)
-		begin
-			INTERNAL_I2C_REGISTER_TIMEOUT <= PWDATA[13:0];
-		end
-		else
-		begin
-			INTERNAL_I2C_REGISTER_CONFIG <= INTERNAL_I2C_REGISTER_CONFIG;
-		end
-		
-	end
-
-end 
+    if (!PRESETn)
+    begin
+        INTERNAL_I2C_REGISTER_CONFIG  <= 14'd0;
+        INTERNAL_I2C_REGISTER_TIMEOUT <= 14'd0;
+    end
+    else
+    begin
+        if (PSELx && PENABLE && PWRITE && PREADY)
+        begin
+            case (PADDR)
+                32'd8:  INTERNAL_I2C_REGISTER_CONFIG  <= PWDATA[13:0];
+                32'd12: INTERNAL_I2C_REGISTER_TIMEOUT <= PWDATA[13:0];
+                default: ;
+            endcase
+        end
+    end
+end
 
 
 endmodule

@@ -92,7 +92,14 @@ module i2c(
 	output SDA_ENABLE,
 	output SCL_ENABLE,
 	inout SDA,
-	inout SCL
+	inout SCL,
+
+  //DMA HANDSHAKE PORTS
+  output reg tx_dma_req_o,
+  input wire tx_dma_clr_i,
+  output reg rx_dma_req_o,
+  input wire rx_dma_clr_i
+
 
 	  );
 
@@ -132,7 +139,44 @@ module i2c(
 	//wire w_full_tx;
 
 	//assign w_pwrite = (PWRITE == 1'b0)?1'b1:1'b0;
-		
+	
+    	  // -------------------------------------------------------------
+    // DMA LATCHED HANDSHAKE LOGIC
+    // -------------------------------------------------------------
+    always_ff @(posedge PCLK or negedge PRESETn) begin
+        if (!PRESETn) begin
+            tx_dma_req_o <= 1'b0;
+            rx_dma_req_o <= 1'b0;
+        end else begin
+            
+            // ---------------------------------------------------------
+            // 1. I2C Transmit w_full is the TX FIFO full flag 
+            // ---------------------------------------------------------
+            if (tx_dma_clr_i) begin
+                // DMA pulsed clear: The transfer is complete. Clear the request.
+                tx_dma_req_o <= 1'b0;
+            end 
+            else if (! w_full && !tx_dma_req_o) begin
+                // Assert request when TX FIFO is not full
+                tx_dma_req_o <= 1'b1;
+            end
+
+            // ---------------------------------------------------------
+            // 2. I2C Recived
+            // RX_F_EMPTY is the RX FIFO empty flag  
+            // ---------------------------------------------------------
+            if (rx_dma_clr_i) begin
+                // DMA pulsed clear: The transfer is complete. Clear the request.
+                rx_dma_req_o <= 1'b0;
+            end 
+            else if (!RX_F_EMPTY && !rx_dma_req_o) begin
+                // Assert request when RX FIFO has data.
+                rx_dma_req_o <= 1'b1;
+            end
+
+        end
+    end
+  
 	
 
 	//CONECTIONS WITH FIFO TX
@@ -187,6 +231,8 @@ module i2c(
 			.INT_TX(INT_TX),
 			.TX_EMPTY(tx_empty),
 			.RX_EMPTY(rx_empty),
+			.TX_FULL(TX_F_FULL),
+			.RX_FULL(RX_F_FULL),
 			.ERROR(error)
 
 		     );
